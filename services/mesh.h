@@ -328,9 +328,13 @@ int mesh_new_callback(struct mesh_area* mesh, struct query_info* qinfo,
  * @param qinfo: query from client.
  * @param qflags: flags from client query.
  * @param leeway: TTL leeway what to expire earlier for this update.
+ * @param rep: comm_reply for the client; to be used when subnet is enabled.
+ * @param opt_list: edns opt_list from the client; to be used when subnet is
+ *	enabled.
  */
 void mesh_new_prefetch(struct mesh_area* mesh, struct query_info* qinfo,
-	uint16_t qflags, time_t leeway);
+	uint16_t qflags, time_t leeway, struct comm_reply* rep,
+	struct edns_option* opt_list);
 
 /**
  * Handle new event from the wire. A serviced query has returned.

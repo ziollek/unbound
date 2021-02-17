@@ -780,10 +780,11 @@ bail_out:
 
 /** Reply to client and perform prefetch to keep cache up to date. */
 static void
-reply_and_prefetch(struct worker* worker, struct query_info* qinfo, 
-	uint16_t flags, struct comm_reply* repinfo, time_t leeway, int noreply)
+reply_and_prefetch(struct worker* worker, struct query_info* qinfo,
+	uint16_t flags, struct comm_reply* repinfo, time_t leeway, int noreply,
+	struct edns_option* opt_list)
 {
-	/* first send answer to client to keep its latency 
+	/* first send answer to client to keep its latency
 	 * as small as a cachereply */
 	if(!noreply) {
 		if(repinfo->c->tcp_req_info) {
@@ -794,13 +795,25 @@ reply_and_prefetch(struct worker* worker, struct query_info* qinfo,
 		comm_point_send_reply(repinfo);
 	}
 	server_stats_prefetch(&worker->stats, worker);
+
+#ifdef CLIENT_SUBNET
+	/* Check if the subnet module is enabled. In that case pass over the
+	 * comm_reply information for ECS generation later. The mesh states are
+	 * unique when subnet is enabled. */
+	if(modstack_find(&worker->env.mesh->mods, "subnet") != -1
+		&& worker->env.unique_mesh){
+		mesh_new_prefetch(worker->env.mesh, qinfo, flags, leeway +
+			PREFETCH_EXPIRY_ADD, repinfo, opt_list);
+		return;
+	}
+#endif
 	
 	/* create the prefetch in the mesh as a normal lookup without
 	 * client addrs waiting, which has the cache blacklisted (to bypass
 	 * the cache and go to the network for the data). */
 	/* this (potentially) runs the mesh for the new query */
-	mesh_new_prefetch(worker->env.mesh, qinfo, flags, leeway + 
-		PREFETCH_EXPIRY_ADD);
+	mesh_new_prefetch(worker->env.mesh, qinfo, flags, leeway +
+		PREFETCH_EXPIRY_ADD, NULL, opt_list);
 }
 
 /**
@@ -1100,6 +1113,7 @@ worker_handle_request(struct comm_point* c, void* arg, int error,
 	struct lruhash_entry* e;
 	struct query_info qinfo;
 	struct edns_data edns;
+	struct edns_option* original_edns_list = NULL;
 	enum acl_access acl;
 	struct acl_addr* acladdr;
 	int rc = 0;
@@ -1474,6 +1488,11 @@ worker_handle_request(struct comm_point* c, void* arg, int error,
 		cinfo = &cinfo_tmp;
 	}
 
+	/* Keep the original edns list around. The pointer could change if there is
+	 * a cached answer (through the inplace callback function there).
+	 * No need to actually copy the contents as they shouldn't change.
+	 * Used while prefetching and subnet is enabled. */
+	original_edns_list = edns.opt_list;
 lookup_cache:
 	/* Lookup the cache.  In case we chase an intermediate CNAME chain
 	 * this is a two-pass operation, and lookup_qinfo is different for
@@ -1509,7 +1528,8 @@ lookup_cache:
 					reply_and_prefetch(worker, lookup_qinfo,
 						sldns_buffer_read_u16_at(c->buffer, 2),
 						repinfo, leeway,
-						(partial_rep || need_drop));
+						(partial_rep || need_drop),
+						original_edns_list);
 					if(!partial_rep) {
 						rc = 0;
 						regional_free_all(worker->scratchpad);
